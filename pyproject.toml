@@ -1,0 +1,67 @@
+[project]
+name = "aef-embeddings"
+version = "0.1.0"
+description = "Python client for downloading and processing AlphaEarth Foundation satellite embeddings from Google Earth Engine."
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Dimitris Mantas", email = "d.mantas@geosystems-hellas.gr" },
+]
+requires-python = ">=3.12"
+keywords = [
+    "earth-engine",
+    "embeddings",
+    "geospatial",
+    "remote-sensing",
+    "satellite",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Typing :: Typed",
+]
+dependencies = [
+    "earthengine-api>=1.7.15",
+    "geopandas>=1.1.2",
+    "google>=3.0.0",
+    "h5py>=3.12.0",
+    "ipykernel>=7.2.0",
+    "loguru>=0.7.3",
+    "numpy>=2.4.2",
+    "pyproj>=3.7.2",
+    "tqdm>=4.67.3",
+]
+
+[project.urls]
+Repository = "https://github.com/DimitrisMantas/aef-embeddings"
+
+[build-system]
+requires = ["uv_build>=0.9.28,<0.10.0"]
+build-backend = "uv_build"
+
+[project.optional-dependencies]
+examples = [
+    # Faster I/O
+    # https://geopandas.org/en/v1.1.1/docs/reference/api/geopandas.read_file.html
+    "pyarrow>=23.0.1",
+    "pyogrio>=0.12.1",
+    "python-dotenv>=1.2.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.15.0",
+    "ty>=0.0.17",
+]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP"]

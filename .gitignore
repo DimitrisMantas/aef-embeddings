@@ -1,0 +1,6 @@
+.*
+!.python-version
+!.git*
+
+src/examples/*
+!src/examples/**/*.py
