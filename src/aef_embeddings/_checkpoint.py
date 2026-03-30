@@ -13,6 +13,8 @@ _NUM_BANDS: Final[int] = 64
 
 
 class _PointStatus(IntEnum):
+    """Per-point download status codes stored in the checkpoint array."""
+
     PENDING = 0
     COMPLETED = 1
     FAILED = 2
@@ -26,18 +28,27 @@ def _compute_request_checksum(
     region_size_pixels: int,
     crs: str,
 ) -> str:
-    """Computes a deterministic SHA256 fingerprint of request parameters.
+    """Compute a deterministic SHA-256 fingerprint of request parameters.
+
+    The fingerprint is used to verify that a checkpoint on disk belongs
+    to the same request that is currently being executed.
 
     Args:
-        ids: 1-D point ID array.
-        xs: 1-D source CRS x-coordinates.
-        ys: 1-D source CRS y-coordinates.
-        year: Dataset year.
-        region_size_pixels: Side length of the sampled region in pixels.
-        crs: Source CRS string.
+        ids:
+            One-dimensional point ID array.
+        xs:
+            One-dimensional source-CRS x-coordinates.
+        ys:
+            One-dimensional source-CRS y-coordinates.
+        year:
+            Dataset year.
+        region_size_pixels:
+            Side length of the sampled region in pixels.
+        crs:
+            Source CRS identifier string.
 
     Returns:
-        Hex digest of the SHA256 hash.
+        Hex digest of the SHA-256 hash.
     """
     h = hashlib.sha256()
     h.update(xs.tobytes())
@@ -52,13 +63,14 @@ def _compute_request_checksum(
 def _prepare_checkpoint_dir(
     output_dirpath: pathlib.Path,
 ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
-    """Creates the output directory and returns artifact paths.
+    """Create the output directory and return artifact paths.
 
     Args:
-        output_dirpath: Path to the output directory.
+        output_dirpath:
+            Path to the output directory.
 
     Returns:
-        A tuple of (output_path, status_path, request_checksum_path).
+        A tuple of ``(output_path, status_path, request_checksum_path)``.
     """
     internal = output_dirpath / ".internal"
     internal.mkdir(parents=True, exist_ok=True)
@@ -77,22 +89,32 @@ def _initialize_or_restore_checkpoint(
     request_checksum_path: pathlib.Path,
     request_checksum: str,
 ) -> tuple[Embeddings, Array1D[np.uint8]]:
-    """Initialises a new checkpoint or restores an existing one.
+    """Initialize a new checkpoint or restore an existing one.
+
+    If checkpoint files already exist on disk, they are validated
+    against the current request fingerprint before restoration.
 
     Args:
-        num_points: Number of query points.
-        region_size_pixels: Side length of the sampled region in pixels.
-        output_path: Path to the memory-mapped output file.
-        status_path: Path to the status array file.
-        request_checksum_path: Path to the request fingerprint file.
-        request_checksum: Expected request fingerprint for this run.
+        num_points:
+            Number of query points.
+        region_size_pixels:
+            Side length of the sampled region in pixels.
+        output_path:
+            Path to the memory-mapped output file.
+        status_path:
+            Path to the status array file.
+        request_checksum_path:
+            Path to the request fingerprint file.
+        request_checksum:
+            Expected request fingerprint for this run.
 
     Returns:
-        A tuple of (output memmap, uint8 status array).
+        A tuple of ``(output_memmap, status_array)``.
 
     Raises:
-        ValueError: If the checkpoint contains data from a different
-            request or contains unidentified artifacts.
+        ValueError:
+            If the checkpoint contains data from a different request or
+            contains unidentified artifacts.
     """
     output_shape = (
         num_points,
@@ -130,10 +152,11 @@ def _initialize_or_restore_checkpoint(
             mode="w+",
             shape=output_shape,
         )
-        # NaN-prefill is required for correctness: the merge logic in
-        # _request.py uses np.isnan() to distinguish uninitialized pixels
-        # from valid zeros.  Without it, zero-initialized memmap entries
-        # would look like valid data.
+        # NaN-prefill is required for correctness.
+        # The merge logic in ``_request.py`` uses ``np.isnan`` to distinguish
+        # uninitialized pixels from valid zeros.
+        # Without this, zero-initialized memmap entries would look like valid
+        # embedding data.
         output[:] = np.nan
         status = np.zeros(num_points, dtype=np.uint8)
 

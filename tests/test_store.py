@@ -9,8 +9,8 @@ from aef_embeddings import AEFSatelliteEmbeddingStore
 
 _FIXTURES = pathlib.Path(__file__).parent / "res"
 
-# Indices where quantized store output is known to diverge from
-# the precomputed GeoPackage values.
+# Indices where the quantized store output is known to diverge from the
+# precomputed GeoPackage values due to GEE data version differences.
 _KNOWN_MISMATCHES = np.array([1180, 33679, 43008, 66185, 69679])
 
 
@@ -29,9 +29,9 @@ def test_quantized_output_matches_precomputed(
     points: gpd.GeoDataFrame,
     received_output: np.ndarray,
 ) -> None:
-    """Quantized store output matches GeoPackage columns A00-A63.
+    """Quantized store output must match GeoPackage columns A00-A63.
 
-    Exactly 5 known disagreements are expected at specific indices
+    Exactly five known disagreements are expected at specific indices
     due to GEE data version differences.
     """
     received = AEFSatelliteEmbeddingStore.quantize(received_output).squeeze()

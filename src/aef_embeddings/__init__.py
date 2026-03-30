@@ -1,4 +1,4 @@
-"""aef-embeddings: AlphaEarth Foundation Satellite Embedding client."""
+"""AlphaEarth Foundation satellite embedding client for Google Earth Engine."""
 
 from importlib.metadata import version
 

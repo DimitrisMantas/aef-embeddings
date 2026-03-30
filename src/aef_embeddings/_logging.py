@@ -19,24 +19,26 @@ def _configure_logging(
     *,
     console: bool = False,
 ) -> None:
-    """Adds a rotating JSONL file sink and a console sink.
+    """Add a rotating JSONL file sink and a console sink.
 
-    The JSONL file sink is always added at all levels.  The console
-    sink, routed through ``tqdm.write()`` to avoid disturbing progress
-    bars, is always added for WARNING and above.  When *console* is
-    True, the console sink threshold is lowered to DEBUG so that all
-    log messages are visible.
+    The JSONL file sink is always added at all levels.
+    The console sink routes through ``tqdm.write`` to avoid disturbing
+    progress bars and is added for WARNING and above by default.
+    When *console* is ``True``, the console sink threshold is lowered to
+    DEBUG so that all messages are visible.
 
-    Removes previously registered sinks before re-adding so that
-    repeated calls do not accumulate duplicate sinks.
+    Previously registered sinks are removed first so that repeated calls
+    do not accumulate duplicates.
 
     Args:
-        output_dirpath: Directory for the rotating JSONL log file.
-        console: If True, show all log levels on the console instead
-            of only WARNING and above.
+        output_dirpath:
+            Directory for the rotating JSONL log file.
+        console:
+            If ``True``, show all log levels on the console instead of
+            only WARNING and above.
     """
-    # Remove all existing sinks (including loguru's default stderr
-    # handler) so we have full control over where output goes.
+    # Remove all existing sinks, including the default stderr handler,
+    # so that output routing is fully controlled.
     loguru.logger.remove()
 
     log_dirpath = output_dirpath / "logs"
@@ -63,11 +65,11 @@ def _configure_logging(
 
 @contextlib.contextmanager
 def _redirect_warnings_to_tqdm() -> Iterator[None]:
-    """Routes ``warnings.warn()`` through ``tqdm.write()``.
+    """Route ``warnings.warn`` output through ``tqdm.write``.
 
     Temporarily overrides ``warnings.showwarning`` so that warning
-    messages are printed via ``tqdm.write()`` instead of writing
-    directly to *stderr*, which would disturb active progress bars.
+    messages do not write directly to *stderr*, which would corrupt
+    active progress bars.
     """
     original = warnings.showwarning
 
