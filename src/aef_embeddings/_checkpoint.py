@@ -30,8 +30,8 @@ def _compute_request_checksum(
 ) -> str:
     """Compute a deterministic SHA-256 fingerprint of request parameters.
 
-    The fingerprint is used to verify that a checkpoint on disk belongs
-    to the same request that is currently being executed.
+    The fingerprint is used to verify that a checkpoint on disk belongs to the same
+    request that is currently being executed.
 
     Args:
         ids:
@@ -91,8 +91,8 @@ def _initialize_or_restore_checkpoint(
 ) -> tuple[Embeddings, Array1D[np.uint8]]:
     """Initialize a new checkpoint or restore an existing one.
 
-    If checkpoint files already exist on disk, they are validated
-    against the current request fingerprint before restoration.
+    If checkpoint files already exist on disk, they are validated against the current
+    request fingerprint before restoration.
 
     Args:
         num_points:
@@ -113,8 +113,8 @@ def _initialize_or_restore_checkpoint(
 
     Raises:
         ValueError:
-            If the checkpoint contains data from a different request or
-            contains unidentified artifacts.
+            If the checkpoint contains data from a different request or contains
+            unidentified artifacts.
     """
     output_shape = (
         num_points,
@@ -155,8 +155,8 @@ def _initialize_or_restore_checkpoint(
         # NaN-prefill is required for correctness.
         # The merge logic in ``_request.py`` uses ``np.isnan`` to distinguish
         # uninitialized pixels from valid zeros.
-        # Without this, zero-initialized memmap entries would look like valid
-        # embedding data.
+        # Without this, zero-initialized memmap entries would look like valid embedding
+        # data.
         output[:] = np.nan
         status = np.zeros(num_points, dtype=np.uint8)
 

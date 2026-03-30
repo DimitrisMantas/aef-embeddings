@@ -12,10 +12,8 @@ from aef_embeddings._types import Array1D
 
 _SPATIAL_RES_METERS: Final[int] = 10
 
-# ``pyproj.Transformer`` is not thread-safe, so one instance per thread
-# is required.
-# A thread-local dict maps ``(src_crs, dst_crs)`` pairs to cached
-# transformer instances.
+# ``pyproj.Transformer`` is not thread-safe, so one instance per thread is required.
+# A thread-local dict maps ``(src_crs, dst_crs)`` pairs to cached transformer instances.
 _transformer_local = threading.local()
 
 
@@ -38,8 +36,7 @@ def _utm_zone(lon: float, lat: float) -> int:
     Standard UTM zone boundaries are overridden in two regions:
 
     - **Norway** (56-64 N, 3-12 E): forced to zone 32.
-    - **Svalbard** (72-84 N): zones 31, 33, 35, or 37 depending on
-      longitude.
+    - **Svalbard** (72-84 N): zones 31, 33, 35, or 37 depending on longitude.
 
     Args:
         lon:
@@ -71,9 +68,8 @@ def _resolve_utm_crss(
 ) -> Array1D[np.str_]:
     """Return the UTM CRS EPSG code string for each point.
 
-    Points are reprojected to WGS 84 if they are not already in that
-    CRS, so that longitude and latitude can be used for UTM zone
-    determination.
+    Points are reprojected to WGS 84 if they are not already in that CRS, so that
+    longitude and latitude can be used for UTM zone determination.
 
     Args:
         points:
@@ -96,11 +92,9 @@ def _resolve_utm_crss(
 def _build_proj_transformer(src_crs: str, dst_crs: str) -> pyproj.Transformer:
     """Create a pyproj transformer for the given CRS pair.
 
-    The function first attempts to use the best-accuracy transformation
-    grid.
-    If the grid is unavailable (e.g., in offline or restricted
-    environments), it falls back to the next-best transformation and
-    emits a ``UserWarning``.
+    The function first attempts to use the best-accuracy transformation grid.
+    If the grid is unavailable (e.g., in offline or restricted environments), it falls
+    back to the next-best transformation and emits a ``UserWarning``.
 
     Args:
         src_crs:
@@ -138,8 +132,7 @@ def _build_proj_transformer(src_crs: str, dst_crs: str) -> pyproj.Transformer:
 def _get_transformer(src_crs: str, dst_crs: str) -> pyproj.Transformer:
     """Return a thread-local cached transformer for the given CRS pair.
 
-    Each thread builds at most one ``Transformer`` per
-    ``(src_crs, dst_crs)`` pair.
+    Each thread builds at most one ``Transformer`` per ``(src_crs, dst_crs)`` pair.
 
     Args:
         src_crs:
@@ -148,8 +141,7 @@ def _get_transformer(src_crs: str, dst_crs: str) -> pyproj.Transformer:
             Destination CRS identifier string.
 
     Returns:
-        A thread-local ``Transformer`` configured for strict
-        reprojection.
+        A thread-local ``Transformer`` configured for strict reprojection.
     """
     if not hasattr(_transformer_local, "cache"):
         _transformer_local.cache: dict[tuple[str, str], pyproj.Transformer] = {}
@@ -193,8 +185,7 @@ def _grid_top_left_x(center_x: float, half_side: int, res: float) -> float:
     """Return the x-coordinate of the top-left corner of a pixel grid.
 
     The grid is centered on *center_x* with pixels of size *res*.
-    The top-left corner is the origin of the affine transform where
-    ``scaleX > 0``.
+    The top-left corner is the origin of the affine transform where ``scaleX > 0``.
 
     Args:
         center_x:
@@ -213,8 +204,8 @@ def _grid_top_left_x(center_x: float, half_side: int, res: float) -> float:
 def _grid_top_left_y(center_y: float, half_side: int, res: float) -> float:
     """Return the y-coordinate of the top-left corner of a pixel grid.
 
-    ``scaleY`` is negative (y increases downward in raster convention),
-    so the top-left corner has the largest northing.
+    ``scaleY`` is negative (y increases downward in raster convention), so the top-left
+    corner has the largest northing.
 
     Args:
         center_y:
@@ -240,8 +231,7 @@ def _snap_to_pixel_center(x: float, y: float) -> tuple[float, float]:
             Northing in the local UTM CRS, in meters.
 
     Returns:
-        A ``(snapped_x, snapped_y)`` tuple at the center of the
-        intersecting pixel.
+        A ``(snapped_x, snapped_y)`` tuple at the center of the intersecting pixel.
     """
     col = _pixel_index(x, _SPATIAL_RES_METERS)
     row = _pixel_index(y, _SPATIAL_RES_METERS)
@@ -254,8 +244,8 @@ def _snap_to_pixel_center(x: float, y: float) -> tuple[float, float]:
 def _half_patch_side_m(region_size_pixels: int) -> float:
     """Return the buffer radius that produces the correct patch extent.
 
-    This value is passed to ``ee.Geometry.Point.buffer`` so that
-    ``.bounds`` yields a bounding box equal to the full patch extent.
+    This value is passed to ``ee.Geometry.Point.buffer`` so that ``.bounds`` yields a
+    bounding box equal to the full patch extent.
 
     Args:
         region_size_pixels:

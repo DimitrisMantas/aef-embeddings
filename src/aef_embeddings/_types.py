@@ -11,8 +11,8 @@ type Array1D[T: np.generic] = np.ndarray[tuple[int], np.dtype[T]]
 # Four-dimensional memory-mapped embedding array of shape (N, S, S, 64).
 type Embeddings = np.memmap[tuple[int, int, int, int], np.dtype[np.float64]]
 
-# Single-point response from ``getPixels`` after structured-to-unstructured
-# conversion, with shape (S, S, 64).
+# Single-point response from ``getPixels`` after structured-to-unstructured conversion,
+# with shape (S, S, 64).
 type _Response = np.ndarray[tuple[int, int, int], np.dtype[np.float64]]
 
 

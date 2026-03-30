@@ -22,23 +22,23 @@ def _configure_logging(
     """Add a rotating JSONL file sink and a console sink.
 
     The JSONL file sink is always added at all levels.
-    The console sink routes through ``tqdm.write`` to avoid disturbing
-    progress bars and is added for WARNING and above by default.
-    When *console* is ``True``, the console sink threshold is lowered to
-    DEBUG so that all messages are visible.
+    The console sink routes through ``tqdm.write`` to avoid disturbing progress bars and
+    is added for WARNING and above by default.
+    When *console* is ``True``, the console sink threshold is lowered to DEBUG so that
+    all messages are visible.
 
-    Previously registered sinks are removed first so that repeated calls
-    do not accumulate duplicates.
+    Previously registered sinks are removed first so that repeated calls do not
+    accumulate duplicates.
 
     Args:
         output_dirpath:
             Directory for the rotating JSONL log file.
         console:
-            If ``True``, show all log levels on the console instead of
-            only WARNING and above.
+            If ``True``, show all log levels on the console instead of only WARNING and
+            above.
     """
-    # Remove all existing sinks, including the default stderr handler,
-    # so that output routing is fully controlled.
+    # Remove all existing sinks, including the default stderr handler, so that output
+    # routing is fully controlled.
     loguru.logger.remove()
 
     log_dirpath = output_dirpath / "logs"
@@ -67,9 +67,8 @@ def _configure_logging(
 def _redirect_warnings_to_tqdm() -> Iterator[None]:
     """Route ``warnings.warn`` output through ``tqdm.write``.
 
-    Temporarily overrides ``warnings.showwarning`` so that warning
-    messages do not write directly to *stderr*, which would corrupt
-    active progress bars.
+    Temporarily overrides ``warnings.showwarning`` so that warning messages do not write
+    directly to *stderr*, which would corrupt active progress bars.
     """
     original = warnings.showwarning
 

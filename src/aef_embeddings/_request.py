@@ -15,7 +15,7 @@ from aef_embeddings._types import _AffineTransform, _Grid, _Request, _Response
 
 # No-data sentinel used by the AEF dataset in float64 space.
 # Derived from the quantized no-data value -128:
-#   dequantize(-128) = -((128 / 127.5) ** 2).
+#     dequantize(-128) = -((128 / 127.5) ** 2).
 _NODATA_VALUE_F64: Final[float] = -((128 / 127.5) ** 2)
 
 # Canonical band identifiers for the 64-band embedding.
@@ -30,8 +30,7 @@ def _build_base_request(
 ) -> _Request:
     """Build a ``getPixels`` request body without an ``assetId``.
 
-    The caller must set ``request["assetId"]`` before dispatching the
-    request.
+    The caller must set ``request["assetId"]`` before dispatching the request.
 
     Args:
         x:
@@ -44,8 +43,7 @@ def _build_base_request(
             EPSG code string for the local UTM CRS.
 
     Returns:
-        A ``_Request`` dict ready to be dispatched after setting
-        ``assetId``.
+        A ``_Request`` dict ready to be dispatched after setting ``assetId``.
     """
     half_side_px = region_size_pixels // 2
     affine: _AffineTransform = {
@@ -75,10 +73,9 @@ def _build_base_request(
 def _fetch_response(request: _Request) -> _Response:
     """Fetch pixel data from GEE and convert to an unstructured array.
 
-    The GEE ``getPixels`` API returns a NumPy structured array with one
-    named field per band.
-    This function converts it to a plain float64 array of shape
-    ``(S, S, 64)``.
+    The GEE ``getPixels`` API returns a NumPy structured array with one named field per
+    band.
+    This function converts it to a plain float64 array of shape ``(S, S, 64)``.
 
     Args:
         request:
@@ -89,8 +86,8 @@ def _fetch_response(request: _Request) -> _Response:
 
     Raises:
         ValueError:
-            If GEE returns an unstructured array instead of the
-            expected structured ``NUMPY_NDARRAY``.
+            If GEE returns an unstructured array instead of the expected structured
+            ``NUMPY_NDARRAY``.
     """
     response = ee.data.getPixels(cast(dict[str, Any], request))
     band_names = response.dtype.names
@@ -109,8 +106,8 @@ def _find_response_conflicts(
 ) -> np.ndarray[tuple[int, ...], np.dtype[np.bool_]] | None:
     """Return a boolean mask of pixels that are valid in both responses but differ.
 
-    A conflict occurs when a pixel is finite, non-no-data in both the
-    parent and child responses but the two values disagree.
+    A conflict occurs when a pixel is finite, non-no-data in both the parent and child
+    responses but the two values disagree.
 
     Args:
         parent_response:
@@ -119,8 +116,7 @@ def _find_response_conflicts(
             New tile response array of shape ``(S, S, 64)``.
 
     Returns:
-        Boolean mask of conflicting elements, or ``None`` if there are
-        no conflicts.
+        Boolean mask of conflicting elements, or ``None`` if there are no conflicts.
     """
 
     def _is_invalid(
@@ -143,8 +139,8 @@ def _merge_child_into_parent_response(
     """Fill invalid parent pixels from valid child pixels.
 
     This is a pure gap-fill operation.
-    It does not check for conflicts; call ``_find_response_conflicts``
-    first if conflict detection is needed.
+    It does not check for conflicts; call ``_find_response_conflicts`` first if conflict
+    detection is needed.
 
     Args:
         parent_response:

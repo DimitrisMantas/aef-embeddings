@@ -47,11 +47,11 @@ _MAX_GEE_WORKERS: Final[int] = 40
 class AEFSatelliteEmbeddingStore:
     """GEE client for the AlphaEarth Foundation Satellite Embedding dataset.
 
-    This class provides methods for downloading, quantizing, and pooling
-    64-band satellite embeddings at 10 m spatial resolution.
+    This class provides methods for downloading, quantizing, and pooling 64-band
+    satellite embeddings at 10 m spatial resolution.
 
-    Use the ``create`` class method to authenticate and initialize a
-    session in one step.
+    Use the ``create`` class method to authenticate and initialize a session in one
+    step.
 
     See Also:
         - [Dataset catalog](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL)
@@ -68,15 +68,13 @@ class AEFSatelliteEmbeddingStore:
         """Construct a store bound to an already-initialized Earth Engine session.
 
         Prefer ``AEFSatelliteEmbeddingStore.create`` for standard usage.
-        Use this constructor directly only when testing without live GEE
-        credentials.
+        Use this constructor directly only when testing without live GEE credentials.
 
         Args:
             use_high_volume_endpoint:
-                Whether the session was initialized with the high-volume
-                endpoint.
-                Stored for informational purposes only; the endpoint is
-                set during ``ee.Initialize``.
+                Whether the session was initialized with the high-volume endpoint.
+                Stored for informational purposes only; the endpoint is set during
+                ``ee.Initialize``.
 
         See Also:
             [High-volume endpoint](https://developers.google.com/earth-engine/guides/processing_environments#high-volume_endpoint)
@@ -93,21 +91,18 @@ class AEFSatelliteEmbeddingStore:
     ) -> "AEFSatelliteEmbeddingStore":
         """Authenticate with GEE, initialize a session, and return a new store.
 
-        This is the standard entry point for interactive and production
-        use.
+        This is the standard entry point for interactive and production use.
 
         Args:
             project_id:
                 GEE project ID string.
-                If ``None``, the default project configured in the Earth
-                Engine credentials is used.
+                If ``None``, the default project configured in the Earth Engine
+                credentials is used.
             use_high_volume_endpoint:
-                Whether to use the high-volume endpoint for server
-                requests.
+                Whether to use the high-volume endpoint for server requests.
 
         Returns:
-            A new ``AEFSatelliteEmbeddingStore`` bound to the
-            initialized session.
+            A new ``AEFSatelliteEmbeddingStore`` bound to the initialized session.
 
         See Also:
             [High-volume endpoint](https://developers.google.com/earth-engine/guides/processing_environments#high-volume_endpoint)
@@ -129,8 +124,8 @@ class AEFSatelliteEmbeddingStore:
     ) -> np.ndarray[tuple[int, ...], np.dtype[np.int8]]:
         """Quantize a float64 embedding array to int8.
 
-        Applies the signed square-root quantization scheme used for the
-        GCS distribution of the dataset [1]_.
+        Applies the signed square-root quantization scheme used for the GCS distribution
+        of the dataset [1]_.
         The input array must not contain NaN or infinity values.
 
         Args:
@@ -141,10 +136,9 @@ class AEFSatelliteEmbeddingStore:
             Int8 array with the same shape as *values*.
 
         References:
-            .. [1] Google, "AlphaEarth Foundation Satellite Embeddings
-               on Google Cloud Storage," *Google Earth Engine Guides*,
-               2025. [Online]. Available:
-               https://developers.google.com/earth-engine/guides/aef_on_gcs_readme#de-quantization
+            .. [1] Google, "AlphaEarth Foundation Satellite Embeddings on Google Cloud
+                Storage," *Google Earth Engine Guides*, 2025. [Online].
+                Available: https://developers.google.com/earth-engine/guides/aef_on_gcs_readme#de-quantization
         """
         # sqrt(|x|) * sign(x) * 127.5, clamped to [-127, 127].
         return np.clip(
@@ -159,8 +153,8 @@ class AEFSatelliteEmbeddingStore:
     ) -> np.ndarray[tuple[int, ...], np.dtype[np.float64]]:
         """Dequantize an int8 embedding array back to float64.
 
-        Applies the inverse of the signed square-root quantization
-        scheme used for the GCS distribution of the dataset [1]_.
+        Applies the inverse of the signed square-root quantization scheme used for the
+        GCS distribution of the dataset [1]_.
         The input array must not contain NaN or infinity values.
 
         Args:
@@ -171,10 +165,9 @@ class AEFSatelliteEmbeddingStore:
             Float64 array with the same shape as *values*.
 
         References:
-            .. [1] Google, "AlphaEarth Foundation Satellite Embeddings
-               on Google Cloud Storage," *Google Earth Engine Guides*,
-               2025. [Online]. Available:
-               https://developers.google.com/earth-engine/guides/aef_on_gcs_readme#de-quantization
+            .. [1] Google, "AlphaEarth Foundation Satellite Embeddings on Google Cloud
+                Storage," *Google Earth Engine Guides*, 2025. [Online].
+                Available: https://developers.google.com/earth-engine/guides/aef_on_gcs_readme#de-quantization
         """
         data = values.astype(np.float64)
         # (x / 127.5)^2 * sign(x).
@@ -187,10 +180,10 @@ class AEFSatelliteEmbeddingStore:
     ) -> np.ndarray[tuple[int, ...], np.dtype[np.float64]]:
         """Pool spatial dimensions using Generalized Mean (GeM) pooling.
 
-        GeM interpolates between average pooling (``p = 1``) and max
-        pooling (``p -> inf``) via a tunable power parameter [1]_.
-        NaN values are automatically excluded from the mean (masked
-        pooling via ``np.nanmean``).
+        GeM interpolates between average pooling (``p = 1``) and max pooling
+        (``p -> inf``) via a tunable power parameter [1]_.
+        NaN values are automatically excluded from the mean (masked pooling via
+        ``np.nanmean``).
 
         For input of shape ``(N, S, S, D)``, returns ``(N, D)``.
         For input of shape ``(S, S, D)``, returns ``(D,)``.
@@ -198,34 +191,30 @@ class AEFSatelliteEmbeddingStore:
         Args:
             values:
                 Float64 array with at least three dimensions.
-                The last two spatial dimensions precede the band
-                dimension.
+                The last two spatial dimensions precede the band dimension.
             p:
                 Power parameter.
                 Must be positive.
 
         Returns:
-            Array with spatial dimensions collapsed to shape
-            ``(..., D)``.
+            Array with spatial dimensions collapsed to shape ``(..., D)``.
 
         Raises:
             ValueError:
                 If *p* is not positive.
 
         References:
-            .. [1] F. Radenovic, G. Tolias, and O. Chum, "Fine-tuning
-               CNN image retrieval with no human annotation," *IEEE
-               Trans. Pattern Anal. Mach. Intell.*, vol. 41, no. 7,
-               pp. 1655-1668, Jul. 2019,
-               doi: `10.1109/TPAMI.2018.2846566
-               <https://doi.org/10.1109/TPAMI.2018.2846566>`_.
+            .. [1] F. Radenovic, G. Tolias, and O. Chum, "Fine-tuning CNN image
+                retrieval with no human annotation,"
+                *IEEE Trans. Pattern Anal. Mach. Intell.*,
+                vol. 41, no. 7, pp. 1655-1668, Jul. 2019,
+                doi: `10.1109/TPAMI.2018.2846566 <https://doi.org/10.1109/TPAMI.2018.2846566>`_.
 
         See Also:
-            - I. Corley, C. Robinson, I. Becker-Reshef, and J. M.
-              Lavista Ferres, "From pixels to patches: Pooling
-              strategies for Earth embeddings," in *Proc. ICLR Workshop
-              Mach. Learn. Remote Sens. (ML4RS)*, 2026.
-              `[GitHub] <https://github.com/isaaccorley/geopool>`_
+            - I. Corley, C. Robinson, I. Becker-Reshef, and J. M. Lavista Ferres,
+                "From pixels to patches: Pooling strategies for Earth embeddings,"
+                in *Proc. ICLR Workshop Mach. Learn. Remote Sens. (ML4RS)*, 2026.
+                `[GitHub] <https://github.com/isaaccorley/geopool>`_
         """
         if p <= 0:
             raise ValueError(f"p must be positive, got {p}.")
@@ -261,11 +250,10 @@ class AEFSatelliteEmbeddingStore:
             expanded to shape ``(..., 4*D)``.
 
         References:
-            .. [1] I. Corley, C. Robinson, I. Becker-Reshef, and J. M.
-               Lavista Ferres, "From pixels to patches: Pooling
-               strategies for Earth embeddings," in *Proc. ICLR Workshop
-               Mach. Learn. Remote Sens. (ML4RS)*, 2026.
-               `[GitHub] <https://github.com/isaaccorley/geopool>`_
+            .. [1] I. Corley, C. Robinson, I. Becker-Reshef, and J. M. Lavista Ferres,
+                "From pixels to patches: Pooling strategies for Earth embeddings,"
+                in *Proc. ICLR Workshop Mach. Learn. Remote Sens. (ML4RS)*, 2026.
+                `[GitHub] <https://github.com/isaaccorley/geopool>`_
         """
         axes = (-3, -2)
         return np.concatenate(
@@ -291,15 +279,14 @@ class AEFSatelliteEmbeddingStore:
     ) -> pathlib.Path:
         """Sample a square region of embeddings around each query point.
 
-        Each point is reprojected to its local UTM zone, snapped to the
-        nearest pixel center, and a square region of
-        ``region_size_pixels`` x ``region_size_pixels`` is sampled
-        around it.
-        When a region spans multiple GEE tiles, the responses are merged
-        with conflict detection.
+        Each point is reprojected to its local UTM zone, snapped to the nearest pixel
+        center, and a square region of ``region_size_pixels`` x ``region_size_pixels``
+        is sampled around it.
+        When a region spans multiple GEE tiles, the responses are merged with conflict
+        detection.
 
-        Downloads are checkpointed periodically so that interrupted jobs
-        can be resumed without re-downloading completed points.
+        Downloads are checkpointed periodically so that interrupted jobs can be resumed
+        without re-downloading completed points.
 
         Args:
             points:
@@ -322,22 +309,21 @@ class AEFSatelliteEmbeddingStore:
                 Directory for output and checkpoint files.
             checkpoint_period_points:
                 Number of processed points between checkpoint saves.
-                If larger than the total number of query points, a
-                single checkpoint is saved on completion.
+                If larger than the total number of query points, a single checkpoint is
+                saved on completion.
             debug:
                 If ``True``, enable structured logging to stdout and a
-                JSONL file, and force single-threaded execution for
-                deterministic log ordering.
+                JSONL file, and force single-threaded execution for deterministic log
+                ordering.
 
         Returns:
-            Path to the HDF5 output file containing datasets
-            ``values``, ``ids``, ``x``, ``y``, and ``status``.
+            Path to the HDF5 output file containing datasets ``values``, ``ids``, ``x``,
+            ``y``, and ``status``.
 
         Raises:
             ValueError:
-                If *year* is outside [2017, 2025], if *max_workers*
-                exceeds 40, or if *region_size_pixels* is not a positive
-                odd integer.
+                If *year* is outside [2017, 2025], if *max_workers* exceeds 40, or if
+                *region_size_pixels* is not a positive odd integer.
 
         See Also:
             [Adjustable quota limits](https://developers.google.com/earth-engine/guides/usage#adjustable_quota_limits)
@@ -348,13 +334,13 @@ class AEFSatelliteEmbeddingStore:
             )
         if max_workers is not None and max_workers > _MAX_GEE_WORKERS:
             raise ValueError(
-                f"max_workers cannot exceed {_MAX_GEE_WORKERS} without "
-                f"special project configuration, got {max_workers}."
+                f"max_workers cannot exceed {_MAX_GEE_WORKERS} without special project "
+                f"configuration, got {max_workers}."
             )
         if region_size_pixels < 1 or region_size_pixels % 2 == 0:
             raise ValueError(
-                f"region_size_pixels must be a positive odd integer, "
-                f"got {region_size_pixels}."
+                f"region_size_pixels must be a positive odd integer, got "
+                f"{region_size_pixels}."
             )
 
         ids, xs, ys, utm_crs_codes = _get_point_info(points, point_id_column)
@@ -477,10 +463,9 @@ class AEFSatelliteEmbeddingStore:
     ) -> pathlib.Path:
         """Write a self-describing HDF5 file with all outputs.
 
-        The file contains five datasets (``values``, ``ids``, ``x``,
-        ``y``, ``status``) and five file-level attributes (``crs``,
-        ``year``, ``region_size_pixels``, ``spatial_res_meters``,
-        ``created_at``).
+        The file contains five datasets (``values``, ``ids``, ``x``, ``y``, ``status``)
+        and five file-level attributes (``crs``, ``year``, ``region_size_pixels``,
+        ``spatial_res_meters``, ``created_at``).
         A companion ``.sha256`` checksum file is written alongside it.
 
         Args:
@@ -581,11 +566,10 @@ class AEFSatelliteEmbeddingStore:
     ) -> _Response:
         """Sample a patch around a single point from GEE.
 
-        The point is reprojected from the source CRS to its local UTM
-        zone, snapped to the nearest pixel center, and the requested
-        region is fetched.
-        If the region spans multiple tiles, subsequent tile responses
-        are merged into the first.
+        The point is reprojected from the source CRS to its local UTM zone, snapped to
+        the nearest pixel center, and the requested region is fetched.
+        If the region spans multiple tiles, subsequent tile responses are merged into
+        the first.
 
         Args:
             x:
@@ -674,17 +658,17 @@ class AEFSatelliteEmbeddingStore:
                             child_response[conflict_mask]
                         ).tolist(),
                     ).warning(
-                        f"Overlapping tiles {parent_tile_id} and {tile_id} "
-                        f"disagree on {int(conflict_mask[..., 0].sum())} "
-                        f"pixel(s); keeping values from the first tile."
+                        f"Overlapping tiles {parent_tile_id} and {tile_id} disagree on"
+                        f"{int(conflict_mask[..., 0].sum())} pixel(s); keeping values "
+                        f"from the first tile."
                     )
                 _merge_child_into_parent_response(parent_response, child_response)
 
         if parent_response is None:
             raise RuntimeError(
                 "No dataset tiles found for this point. "
-                "The location may be outside the spatial coverage of the "
-                f"dataset for the requested year ({year})."
+                "The location may be outside the spatial coverage of the dataset for "
+                "the requested year ({year})."
             )
 
         valid_px = int(np.sum(~np.isnan(parent_response[..., 0])))
