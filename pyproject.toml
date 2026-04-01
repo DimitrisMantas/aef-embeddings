@@ -1,7 +1,7 @@
 [project]
 name = "aef-embeddings"
 version = "1.0.0a1"
-description = "Python client for downloading and processing AlphaEarth Foundation satellite embeddings from Google Earth Engine."
+description = "Python client for downloading and processing AlphaEarth Foundation embeddings from Google Earth Engine."
 readme = "README.md"
 license = "MIT"
 authors = [
@@ -26,16 +26,19 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "earthengine-api>=1.7.15",
+    "click>=8.1.0",
+    "earthengine-api>=1.7.20",
     "geopandas>=1.1.2",
-    "google>=3.0.0",
+    "google-api-core>=2.30.1",
     "h5py>=3.12.0",
-    "ipykernel>=7.2.0",
     "loguru>=0.7.3",
-    "numpy>=2.4.2",
+    "numpy>=2.4.4",
     "pyproj>=3.7.2",
     "tqdm>=4.67.3",
 ]
+
+[project.scripts]
+aef = "aef_embeddings.cli:cli"
 
 [project.urls]
 Repository = "https://github.com/DimitrisMantas/aef-embeddings"
@@ -56,8 +59,8 @@ examples = [
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
-    "ruff>=0.15.0",
-    "ty>=0.0.17",
+    "ruff>=0.15.8",
+    "ty>=0.0.27",
 ]
 
 [tool.pytest.ini_options]
