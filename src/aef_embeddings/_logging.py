@@ -1,10 +1,11 @@
-"""Logging and output configuration for the aef-embeddings package."""
+"""Logging and output configuration."""
 
 import contextlib
+import json
 import pathlib
 import warnings
 from collections.abc import Iterator
-from typing import Final
+from typing import Any, Final, TextIO
 
 import loguru
 import tqdm
@@ -14,45 +15,71 @@ _LOG_FORMAT: Final[str] = (
 )
 
 
-def _configure_logging(
-    output_dirpath: pathlib.Path,
-    *,
-    console: bool = False,
-) -> None:
-    """Add a rotating JSONL file sink and a console sink.
+class _PointLog:
+    """Accumulated log entry for a single query point."""
 
-    The JSONL file sink is always added at all levels.
-    The console sink routes through ``tqdm.write`` to avoid disturbing progress bars and
-    is added for WARNING and above by default.
-    When *console* is ``True``, the console sink threshold is lowered to DEBUG so that
-    all messages are visible.
+    def __init__(
+        self,
+        point_index: int,
+        source_x: float,
+        source_y: float,
+        source_crs: str,
+        utm_crs: str,
+        year: int,
+        region_size_pixels: int,
+    ) -> None:
+        self._data: dict[str, Any] = {
+            "point": point_index,
+            "source_x": source_x,
+            "source_y": source_y,
+            "source_crs": source_crs,
+            "utm_crs": utm_crs,
+            "year": year,
+            "region_size_pixels": region_size_pixels,
+            "utm_easting": None,
+            "utm_northing": None,
+            "snapped_easting": None,
+            "snapped_northing": None,
+            "tiles": [],
+            "conflicts": [],
+            "valid_pixels": 0,
+            "missing_pixels": 0,
+            "checksum_md5": None,
+            "status": "pending",
+            "error": None,
+        }
 
-    Previously registered sinks are removed first so that repeated calls do not
-    accumulate duplicates.
+    def mark_restored(self) -> None:
+        """Mark the entry as restored from a previous checkpoint."""
+        self._data["status"] = "restored"
+
+    def record_success(self, events: dict[str, Any]) -> None:
+        """Merge processing events and mark as successful."""
+        self._data.update(events)
+        self._data["status"] = "success"
+
+    def record_failure(self, error: Exception) -> None:
+        """Mark the entry as failed with an error message."""
+        self._data["status"] = "failure"
+        self._data["error"] = f"{type(error).__name__}: {error}"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the entry as a plain dict for serialization."""
+        return self._data
+
+
+def _configure_logging(*, console: bool = False) -> None:
+    """Configure the console log sink.
+
+    Previously registered sinks are removed first to avoid
+    duplicates.
 
     Args:
-        output_dirpath:
-            Directory for the rotating JSONL log file.
         console:
-            If ``True``, show all log levels on the console instead of only WARNING and
-            above.
+            If ``True``, show all log levels on the console.
+            The default threshold is WARNING.
     """
-    # Remove all existing sinks, including the default stderr handler, so that output
-    # routing is fully controlled.
     loguru.logger.remove()
-
-    log_dirpath = output_dirpath / "logs"
-    log_dirpath.mkdir(parents=True, exist_ok=True)
-
-    loguru.logger.add(
-        log_dirpath / "log.jsonl",
-        format="{message}",
-        serialize=True,
-        backtrace=True,
-        diagnose=True,
-        rotation="10 MB",
-    )
-
     loguru.logger.add(
         lambda msg: tqdm.tqdm.write(msg, end=""),
         format=_LOG_FORMAT,
@@ -63,16 +90,47 @@ def _configure_logging(
     )
 
 
+def _write_point_log(
+    entries: list[dict[str, Any]],
+    output_dirpath: pathlib.Path,
+) -> None:
+    """Write per-point log entries to a JSONL file.
+
+    Each entry occupies one line, keyed on the query point index.
+    The file is overwritten on each call so that checkpoint writes
+    reflect the latest state.
+
+    Args:
+        entries:
+            The accumulated log entries, one per query point.
+        output_dirpath:
+            The output directory.
+    """
+    log_dirpath = output_dirpath / "logs"
+    log_dirpath.mkdir(parents=True, exist_ok=True)
+    with open(log_dirpath / "log.jsonl", mode="w") as f:
+        for entry in entries:
+            json.dump(entry, f, separators=(",", ":"))
+            f.write("\n")
+
+
 @contextlib.contextmanager
 def _redirect_warnings_to_tqdm() -> Iterator[None]:
     """Route ``warnings.warn`` output through ``tqdm.write``.
 
-    Temporarily overrides ``warnings.showwarning`` so that warning messages do not write
-    directly to *stderr*, which would corrupt active progress bars.
+    Prevents warning messages from corrupting active progress bars
+    by temporarily overriding ``warnings.showwarning``.
     """
     original = warnings.showwarning
 
-    def _showwarning(message, category, filename, lineno, file=None, line=None):
+    def _showwarning(
+        message: Warning | str,
+        category: type[Warning],
+        filename: str,
+        lineno: int,
+        file: TextIO | None = None,
+        line: str | None = None,
+    ):
         tqdm.tqdm.write(
             warnings.formatwarning(message, category, filename, lineno, line),
             end="",

@@ -1,6 +1,6 @@
 [project]
 name = "aef-embeddings"
-version = "1.0.0a1"
+version = "1.0.0a2"
 description = "Python client for downloading and processing AlphaEarth Foundation embeddings from Google Earth Engine."
 readme = "README.md"
 license = "MIT"

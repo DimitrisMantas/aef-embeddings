@@ -1,8 +1,8 @@
-"""Checkpoint preparation and restoration for the aef-embeddings package."""
+"""Checkpoint creation and restoration utilities."""
 
 import hashlib
 import pathlib
-from enum import IntEnum
+from enum import IntEnum, auto, unique
 from typing import Final
 
 import numpy as np
@@ -10,111 +10,116 @@ import numpy as np
 from aef_embeddings._types import Array1D, Embeddings
 
 _NUM_BANDS: Final[int] = 64
+"""The total number of bands in the dataset."""
 
 
-class _PointStatus(IntEnum):
-    """Per-point download status codes stored in the checkpoint array."""
+@unique
+class _StatusCode(IntEnum):
+    """Request status codes."""
 
-    PENDING = 0
-    COMPLETED = 1
-    FAILED = 2
+    PENDING = auto()
+    SUCCESS = auto()
+    FAILURE = auto()
 
 
 def _compute_request_checksum(
-    ids: np.ndarray,
+    ids: Array1D[np.int64],
     xs: Array1D[np.float64],
     ys: Array1D[np.float64],
     year: int,
     region_size_pixels: int,
     crs: str,
 ) -> str:
-    """Compute a deterministic SHA-256 fingerprint of request parameters.
+    """Compute a deterministic SHA-256 checksum of a query.
 
-    The fingerprint is used to verify that a checkpoint on disk belongs to the same
-    request that is currently being executed.
+    Used to verify that an existing checkpoint on disk matches
+    the current query.
 
     Args:
         ids:
-            One-dimensional point ID array.
+            The query point IDs.
         xs:
-            One-dimensional source-CRS x-coordinates.
+            The query point x-coordinates in their original CRS.
         ys:
-            One-dimensional source-CRS y-coordinates.
+            The query point y-coordinates in their original CRS.
         year:
-            Dataset year.
+            The dataset year.
+            Valid values range from 2017 to 2025.
         region_size_pixels:
-            Side length of the sampled region in pixels.
+            The side length of the query region in pixels.
         crs:
-            Source CRS identifier string.
+            The EPSG identifier of the query CRS.
 
     Returns:
-        Hex digest of the SHA-256 hash.
+        The hex-encoded SHA-256 digest.
     """
-    h = hashlib.sha256()
-    h.update(xs.tobytes())
-    h.update(ys.tobytes())
-    h.update(ids.tobytes())
-    h.update(year.to_bytes(4, "little"))
-    h.update(region_size_pixels.to_bytes(4, "little"))
-    h.update(crs.encode("utf-8"))
-    return h.hexdigest()
+    checksum = hashlib.sha256()
+    for arg in (ids, xs, ys, year, region_size_pixels, crs):
+        if isinstance(arg, str):
+            checksum.update(arg.encode())
+        elif isinstance(arg, int):
+            checksum.update(str(arg).encode())
+        else:
+            checksum.update(arg.tobytes())
+    return checksum.hexdigest()
 
 
-def _prepare_checkpoint_dir(
-    output_dirpath: pathlib.Path,
+def _maybe_create_checkpoint_directory(
+    root: pathlib.Path,
 ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
-    """Create the output directory and return artifact paths.
+    """Ensure the checkpoint directory exists and return its paths.
 
     Args:
-        output_dirpath:
-            Path to the output directory.
+        root:
+            The parent directory for checkpoint storage.
 
     Returns:
-        A tuple of ``(output_path, status_path, request_checksum_path)``.
+        The memory map, status, and sidecar paths.
     """
-    internal = output_dirpath / ".internal"
-    internal.mkdir(parents=True, exist_ok=True)
+    dirpath = root / ".internal"
+    dirpath.mkdir(parents=True, exist_ok=True)
+
     return (
-        internal / ".output.bin",
-        internal / ".status.npy",
-        internal / ".request.sha256",
+        dirpath / ".output.bin",
+        dirpath / ".status.npy",
+        dirpath / ".request.sha256",
     )
 
 
-def _initialize_or_restore_checkpoint(
+def _restore_or_initialize_checkpoint(
     num_points: int,
     region_size_pixels: int,
     output_path: pathlib.Path,
     status_path: pathlib.Path,
-    request_checksum_path: pathlib.Path,
-    request_checksum: str,
+    checksum_path: pathlib.Path,
+    expected_checksum: str,
 ) -> tuple[Embeddings, Array1D[np.uint8]]:
-    """Initialize a new checkpoint or restore an existing one.
+    """Restore a checkpoint from disk, or initialize a fresh one.
 
-    If checkpoint files already exist on disk, they are validated against the current
-    request fingerprint before restoration.
+    Existing artifacts are validated against the expected checksum
+    before they are reloaded.
 
     Args:
         num_points:
-            Number of query points.
+            The total number of query points.
         region_size_pixels:
-            Side length of the sampled region in pixels.
+            The side length of the query region in pixels.
         output_path:
-            Path to the memory-mapped output file.
+            The memory map.
         status_path:
-            Path to the status array file.
-        request_checksum_path:
-            Path to the request fingerprint file.
-        request_checksum:
-            Expected request fingerprint for this run.
+            The request status checklist.
+        checksum_path:
+            The sidecar.
+        expected_checksum:
+            The checksum of the current query.
 
     Returns:
-        A tuple of ``(output_memmap, status_array)``.
+        The memory map and the request status.
 
     Raises:
         ValueError:
-            If the checkpoint contains data from a different request or contains
-            unidentified artifacts.
+            If the existing artifacts belong to a different
+            query or cannot be identified.
     """
     output_shape = (
         num_points,
@@ -123,20 +128,23 @@ def _initialize_or_restore_checkpoint(
         _NUM_BANDS,
     )
 
-    has_checkpoint = output_path.exists() and status_path.exists()
-    has_request_checksum = request_checksum_path.exists()
+    output_and_status_exist = output_path.exists() and status_path.exists()
+    checksum_exists = checksum_path.exists()
 
-    if has_checkpoint and not has_request_checksum:
-        raise ValueError("Checkpoint directory contains unidentified artifacts.")
+    if output_and_status_exist and not checksum_exists:
+        raise ValueError(
+            "The specified checkpoint directory contains unidentifiable artifacts."
+        )
 
-    if has_request_checksum:
-        stored_id = request_checksum_path.read_text().strip()
-        if stored_id != request_checksum:
+    if checksum_exists:
+        stored_id = checksum_path.read_text().strip()
+        if stored_id != expected_checksum:
             raise ValueError(
-                "Checkpoint directory contains data from a different request."
+                "The specified checkpoint directory contains artifacts"
+                " that correspond to a different request."
             )
 
-    if has_checkpoint:
+    if output_and_status_exist:
         output = np.memmap(
             output_path,
             dtype=np.float64,
@@ -145,19 +153,16 @@ def _initialize_or_restore_checkpoint(
         )
         status = np.load(status_path)
     else:
-        request_checksum_path.write_text(request_checksum)
+        checksum_path.write_text(expected_checksum)
         output = np.memmap(
             output_path,
             dtype=np.float64,
             mode="w+",
             shape=output_shape,
         )
-        # NaN-prefill is required for correctness.
-        # The merge logic in ``_request.py`` uses ``np.isnan`` to distinguish
-        # uninitialized pixels from valid zeros.
-        # Without this, zero-initialized memmap entries would look like valid embedding
-        # data.
+        # NaN-prefill is required so that the merge logic can
+        # distinguish uninitialized pixels from valid zeros.
         output[:] = np.nan
-        status = np.zeros(num_points, dtype=np.uint8)
+        status = np.full(num_points, _StatusCode.PENDING, dtype=np.uint8)
 
     return output, status

@@ -5,7 +5,7 @@ import h5py
 import numpy as np
 import pytest
 
-from aef_embeddings import AEFSatelliteEmbeddingStore
+from aef_embeddings import AEFEmbeddingStore
 
 _FIXTURES = pathlib.Path(__file__).parent / "res"
 
@@ -34,7 +34,7 @@ def test_quantized_output_matches_precomputed(
     Exactly five known disagreements are expected at specific indices
     due to GEE data version differences.
     """
-    received = AEFSatelliteEmbeddingStore.quantize(received_output).squeeze()
+    received = AEFEmbeddingStore.quantize(received_output).squeeze()
     expected = points[[f"A{i:02d}" for i in range(64)]].to_numpy()
     matches = np.all(received == expected, axis=1)
     mismatch_indices = np.flatnonzero(~matches)
@@ -45,27 +45,25 @@ def test_quantized_output_matches_precomputed(
 
 def test_gem_pool_shape():
     x = np.random.default_rng(42).standard_normal((10, 5, 5, 64))
-    result = AEFSatelliteEmbeddingStore.gem_pool(x)
+    result = AEFEmbeddingStore.gem_pool(x)
     assert result.shape == (10, 64)
 
 
 def test_stat_pool_shape():
     x = np.random.default_rng(42).standard_normal((10, 5, 5, 64))
-    result = AEFSatelliteEmbeddingStore.stat_pool(x)
+    result = AEFEmbeddingStore.stat_pool(x)
     assert result.shape == (10, 256)
 
 
 def test_gem_pool_nan_masking():
     x = np.ones((1, 3, 3, 2))
     x[0, 1, 1, :] = np.nan
-    result = AEFSatelliteEmbeddingStore.gem_pool(x)
+    result = AEFEmbeddingStore.gem_pool(x)
     assert not np.any(np.isnan(result))
 
 
 def test_quantize_dequantize_roundtrip():
     rng = np.random.default_rng(42)
     original = rng.uniform(-1, 1, size=(100, 64))
-    roundtripped = AEFSatelliteEmbeddingStore.dequantize(
-        AEFSatelliteEmbeddingStore.quantize(original)
-    )
+    roundtripped = AEFEmbeddingStore.dequantize(AEFEmbeddingStore.quantize(original))
     np.testing.assert_allclose(original, roundtripped, atol=0.02)

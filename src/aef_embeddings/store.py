@@ -1,11 +1,10 @@
-"""Google Earth Engine client for AlphaEarth Foundation satellite embeddings."""
+"""Google Earth Engine client for AlphaEarth Foundation embeddings."""
 
 import concurrent.futures
 import datetime
 import hashlib
 import os
 import pathlib
-import textwrap
 import warnings
 from typing import Any, Final
 
@@ -19,39 +18,45 @@ import tqdm
 
 from aef_embeddings._checkpoint import (
     _compute_request_checksum,
-    _initialize_or_restore_checkpoint,
-    _PointStatus,
-    _prepare_checkpoint_dir,
+    _maybe_create_checkpoint_directory,
+    _restore_or_initialize_checkpoint,
+    _StatusCode,
 )
 from aef_embeddings._geo import (
     _SPATIAL_RES_METERS,
-    _get_transformer,
-    _half_patch_side_m,
-    _resolve_utm_crss,
+    _compute_raster_half_side_length,
+    _compute_utm_crs,
+    _get_or_create_transformer,
     _snap_to_pixel_center,
 )
-from aef_embeddings._logging import _configure_logging, _redirect_warnings_to_tqdm
-from aef_embeddings._request import (
-    _build_base_request,
-    _fetch_response,
-    _find_response_conflicts,
-    _merge_child_into_parent_response,
+from aef_embeddings._logging import (
+    _configure_logging,
+    _PointLog,
+    _redirect_warnings_to_tqdm,
+    _write_point_log,
 )
-from aef_embeddings._types import Array1D, _Response
+from aef_embeddings._request import (
+    _FLOAT_NODATA,
+    _build_pixel_request,
+    _fetch_pixels,
+    _find_tile_conflicts,
+    _merge_tile_pixels,
+)
+from aef_embeddings._types import Array1D, _Request, _Response
 
 _YEAR_MIN: Final[int] = 2017
 _YEAR_MAX: Final[int] = 2025
 _MAX_GEE_WORKERS: Final[int] = 40
 
 
-class AEFSatelliteEmbeddingStore:
-    """GEE client for the AlphaEarth Foundation Satellite Embedding dataset.
+class AEFEmbeddingStore:
+    """Client for the AlphaEarth Foundation Embedding dataset.
 
-    This class provides methods for downloading, quantizing, and pooling 64-band
-    satellite embeddings at 10 m spatial resolution.
+    This class provides methods for downloading, quantizing, and
+    pooling 64-band embeddings at 10 m spatial resolution.
 
-    Use the ``create`` class method to authenticate and initialize a session in one
-    step.
+    Use the ``create`` class method to authenticate and initialize a
+    session in one step.
 
     See Also:
         - [Dataset catalog](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL)
@@ -65,16 +70,18 @@ class AEFSatelliteEmbeddingStore:
         *,
         use_high_volume_endpoint: bool = True,
     ) -> None:
-        """Construct a store bound to an already-initialized Earth Engine session.
+        """Construct a store bound to an already-initialized session.
 
-        Prefer ``AEFSatelliteEmbeddingStore.create`` for standard usage.
-        Use this constructor directly only when testing without live GEE credentials.
+        Prefer ``AEFEmbeddingStore.create`` for standard usage.
+        Use this constructor directly only when testing without live
+        credentials.
 
         Args:
             use_high_volume_endpoint:
-                Whether the session was initialized with the high-volume endpoint.
-                Stored for informational purposes only; the endpoint is set during
-                ``ee.Initialize``.
+                Whether the session was initialized with the
+                high-volume endpoint.
+                Stored for informational purposes only; the endpoint
+                is set during ``ee.Initialize``.
 
         See Also:
             [High-volume endpoint](https://developers.google.com/earth-engine/guides/processing_environments#high-volume_endpoint)
@@ -88,21 +95,24 @@ class AEFSatelliteEmbeddingStore:
         project_id: str | None = None,
         *,
         use_high_volume_endpoint: bool = True,
-    ) -> "AEFSatelliteEmbeddingStore":
-        """Authenticate with GEE, initialize a session, and return a new store.
+    ) -> "AEFEmbeddingStore":
+        """Authenticate, initialize a session, and return a new store.
 
-        This is the standard entry point for interactive and production use.
+        This is the standard entry point for interactive and
+        production use.
 
         Args:
             project_id:
                 GEE project ID string.
-                If ``None``, the default project configured in the Earth Engine
-                credentials is used.
+                If ``None``, the default project configured in the
+                Earth Engine credentials is used.
             use_high_volume_endpoint:
-                Whether to use the high-volume endpoint for server requests.
+                Whether to use the high-volume endpoint for server
+                requests.
 
         Returns:
-            A new ``AEFSatelliteEmbeddingStore`` bound to the initialized session.
+            A new ``AEFEmbeddingStore`` bound to the initialized
+            session.
 
         See Also:
             [High-volume endpoint](https://developers.google.com/earth-engine/guides/processing_environments#high-volume_endpoint)
@@ -124,8 +134,8 @@ class AEFSatelliteEmbeddingStore:
     ) -> np.ndarray[tuple[int, ...], np.dtype[np.int8]]:
         """Quantize a float64 embedding array to int8.
 
-        Applies the signed square-root quantization scheme used for the GCS distribution
-        of the dataset [1]_.
+        Applies the signed square-root quantization scheme used for
+        the GCS distribution of the dataset [1]_.
         The input array must not contain NaN or infinity values.
 
         Args:
@@ -153,8 +163,8 @@ class AEFSatelliteEmbeddingStore:
     ) -> np.ndarray[tuple[int, ...], np.dtype[np.float64]]:
         """Dequantize an int8 embedding array back to float64.
 
-        Applies the inverse of the signed square-root quantization scheme used for the
-        GCS distribution of the dataset [1]_.
+        Applies the inverse of the signed square-root quantization
+        scheme used for the GCS distribution of the dataset [1]_.
         The input array must not contain NaN or infinity values.
 
         Args:
@@ -180,10 +190,10 @@ class AEFSatelliteEmbeddingStore:
     ) -> np.ndarray[tuple[int, ...], np.dtype[np.float64]]:
         """Pool spatial dimensions using Generalized Mean (GeM) pooling.
 
-        GeM interpolates between average pooling (``p = 1``) and max pooling
-        (``p -> inf``) via a tunable power parameter [1]_.
-        NaN values are automatically excluded from the mean (masked pooling via
-        ``np.nanmean``).
+        GeM interpolates between average pooling (``p = 1``) and max
+        pooling (``p -> inf``) via a tunable power parameter [1]_.
+        NaN values are automatically excluded from the mean (masked
+        pooling via ``np.nanmean``).
 
         For input of shape ``(N, S, S, D)``, returns ``(N, D)``.
         For input of shape ``(S, S, D)``, returns ``(D,)``.
@@ -191,13 +201,15 @@ class AEFSatelliteEmbeddingStore:
         Args:
             values:
                 Float64 array with at least three dimensions.
-                The last two spatial dimensions precede the band dimension.
+                The last two spatial dimensions precede the band
+                dimension.
             p:
                 Power parameter.
                 Must be positive.
 
         Returns:
-            Array with spatial dimensions collapsed to shape ``(..., D)``.
+            Array with spatial dimensions collapsed to shape
+            ``(..., D)``.
 
         Raises:
             ValueError:
@@ -232,9 +244,10 @@ class AEFSatelliteEmbeddingStore:
         """Pool spatial dimensions using first- and second-order statistics.
 
         Concatenates per-band mean, standard deviation, minimum, and
-        maximum over the spatial dimensions, producing a descriptor four
-        times the original band count [1]_.
-        NaN values are automatically excluded via ``np.nan*`` functions.
+        maximum over the spatial dimensions, producing a descriptor
+        four times the original band count [1]_.
+        NaN values are automatically excluded via ``np.nan*``
+        functions.
 
         For input of shape ``(N, S, S, D)``, returns ``(N, 4*D)``.
         For input of shape ``(S, S, D)``, returns ``(4*D,)``.
@@ -279,51 +292,54 @@ class AEFSatelliteEmbeddingStore:
     ) -> pathlib.Path:
         """Sample a square region of embeddings around each query point.
 
-        Each point is reprojected to its local UTM zone, snapped to the nearest pixel
-        center, and a square region of ``region_size_pixels`` x ``region_size_pixels``
-        is sampled around it.
-        When a region spans multiple GEE tiles, the responses are merged with conflict
-        detection.
+        Each point is reprojected to its local UTM zone, snapped to
+        the nearest pixel center, and a square region of
+        ``region_size_pixels`` x ``region_size_pixels`` is sampled
+        around it.
+        When a region spans multiple tiles, the rasters are merged
+        with conflict detection.
 
-        Downloads are checkpointed periodically so that interrupted jobs can be resumed
-        without re-downloading completed points.
+        Downloads are checkpointed periodically so that interrupted
+        jobs can be resumed without re-downloading completed points.
 
         Args:
             points:
                 GeoDataFrame of query points in any CRS.
             point_id_column:
-                Name of a column containing point IDs.
+                Name of the column containing query point IDs.
                 Pass ``None`` to use the DataFrame index.
             region_size_pixels:
-                Side length of the sampled square in pixels.
+                Side length of the query region in pixels.
                 Must be a positive odd integer (1, 3, 5, ...).
                 Each pixel covers 10 m.
             year:
                 Dataset year.
                 Must be between 2017 and 2025 inclusive.
             max_workers:
-                Maximum number of worker threads for parallel requests.
+                Maximum number of worker threads for parallel
+                requests.
                 Cannot exceed 40 (GEE quota).
                 Defaults to the ``ThreadPoolExecutor`` default.
             output_dirpath:
-                Directory for output and checkpoint files.
+                Directory for output files and checkpoint artifacts.
             checkpoint_period_points:
-                Number of processed points between checkpoint saves.
-                If larger than the total number of query points, a single checkpoint is
-                saved on completion.
+                Number of query points between checkpoint saves.
+                If larger than the total number of query points, a
+                single checkpoint is saved on completion.
             debug:
-                If ``True``, enable structured logging to stdout and a
-                JSONL file, and force single-threaded execution for deterministic log
+                If ``True``, show all log levels on the console and
+                force single-threaded execution for deterministic
                 ordering.
 
         Returns:
-            Path to the HDF5 output file containing datasets ``values``, ``ids``, ``x``,
-            ``y``, and ``status``.
+            Path to the HDF5 output file containing datasets
+            ``values``, ``ids``, ``x``, ``y``, and ``status``.
 
         Raises:
             ValueError:
-                If *year* is outside [2017, 2025], if *max_workers* exceeds 40, or if
-                *region_size_pixels* is not a positive odd integer.
+                If *year* is outside [2017, 2025], if *max_workers*
+                exceeds 40, or if *region_size_pixels* is not a
+                positive odd integer.
 
         See Also:
             [Adjustable quota limits](https://developers.google.com/earth-engine/guides/usage#adjustable_quota_limits)
@@ -334,28 +350,28 @@ class AEFSatelliteEmbeddingStore:
             )
         if max_workers is not None and max_workers > _MAX_GEE_WORKERS:
             raise ValueError(
-                f"max_workers cannot exceed {_MAX_GEE_WORKERS} without special project "
-                f"configuration, got {max_workers}."
+                f"max_workers cannot exceed {_MAX_GEE_WORKERS}"
+                f" without special project configuration, got {max_workers}."
             )
         if region_size_pixels < 1 or region_size_pixels % 2 == 0:
             raise ValueError(
-                f"region_size_pixels must be a positive odd integer, got "
-                f"{region_size_pixels}."
+                f"region_size_pixels must be a positive odd integer,"
+                f" got {region_size_pixels}."
             )
 
         ids, xs, ys, utm_crs_codes = _get_point_info(points, point_id_column)
 
-        crs = points.crs.to_string()
+        source_crs = points.crs.to_string()
         request_checksum = _compute_request_checksum(
-            ids, xs, ys, year, region_size_pixels, crs
+            ids, xs, ys, year, region_size_pixels, source_crs
         )
 
         output_dirpath = pathlib.Path(output_dirpath)
-        memmap_path, status_path, request_checksum_path = _prepare_checkpoint_dir(
-            output_dirpath
+        memmap_path, status_path, request_checksum_path = (
+            _maybe_create_checkpoint_directory(output_dirpath)
         )
 
-        output, status = _initialize_or_restore_checkpoint(
+        output, status = _restore_or_initialize_checkpoint(
             len(points),
             region_size_pixels,
             memmap_path,
@@ -365,78 +381,95 @@ class AEFSatelliteEmbeddingStore:
         )
         output_path = output_dirpath / "embeddings.h5"
 
-        # Skip downloading if all points are already complete.
-        remaining = np.where(status != _PointStatus.COMPLETED)[0]
-        if len(remaining) == 0:
-            return self._write_hdf5(
-                output_path,
-                output,
-                ids,
-                xs,
-                ys,
-                status,
-                crs,
-                year,
-                region_size_pixels,
+        # Initialize per-point log entries.
+        logs: list[_PointLog] = [
+            _PointLog(
+                point_index=i,
+                source_x=float(xs[i]),
+                source_y=float(ys[i]),
+                source_crs=source_crs,
+                utm_crs=str(utm_crs_codes[i]),
+                year=year,
+                region_size_pixels=region_size_pixels,
+            )
+            for i in range(len(points))
+        ]
+        for i in range(len(points)):
+            if status[i] == _StatusCode.SUCCESS:
+                logs[i].mark_restored()
+
+        remaining = np.where(status != _StatusCode.SUCCESS)[0]
+        if len(remaining) > 0:
+            _configure_logging(console=debug)
+
+            if debug:
+                if max_workers is not None and max_workers > 1:
+                    warnings.warn(
+                        "Debug mode forces single-threaded execution"
+                        " for deterministic log ordering."
+                        " The max_workers setting will be overridden to 1.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                max_workers = 1
+
+            with (
+                _redirect_warnings_to_tqdm(),
+                concurrent.futures.ThreadPoolExecutor(max_workers) as executor,
+            ):
+                futures = {
+                    executor.submit(
+                        self._sample_point_region,
+                        xs[point_index],
+                        ys[point_index],
+                        source_crs,
+                        # GEE and PROJ do not accept NumPy string types.
+                        str(utm_crs_codes[point_index]),
+                        region_size_pixels,
+                        year,
+                    ): point_index
+                    for point_index in remaining
+                }
+
+                progress = tqdm.tqdm(
+                    concurrent.futures.as_completed(futures),
+                    total=len(futures),
+                )
+                for i, future in enumerate(progress, 1):
+                    point_index = futures[future]
+                    try:
+                        pixels, events = future.result()
+                        output[point_index] = pixels
+                        status[point_index] = _StatusCode.SUCCESS
+                        logs[point_index].record_success(events)
+                    except Exception as e:
+                        loguru.logger.warning(
+                            f"Download failed for point {point_index}"
+                            f" ({type(e).__name__}): {e}"
+                        )
+                        output[point_index] = np.nan
+                        status[point_index] = _StatusCode.FAILURE
+                        logs[point_index].record_failure(e)
+
+                    if i % checkpoint_period_points == 0:
+                        output.flush()
+                        np.save(status_path, status)
+                        _write_point_log(
+                            [log.to_dict() for log in logs], output_dirpath
+                        )
+
+            output.flush()
+            np.save(status_path, status)
+
+        if len(status) > 0 and np.all(status == _StatusCode.FAILURE):
+            warnings.warn(
+                "All points failed to download."
+                " The output file contains no valid data.",
+                UserWarning,
+                stacklevel=2,
             )
 
-        _configure_logging(output_dirpath, console=debug)
-
-        if debug:
-            if max_workers is not None and max_workers > 1:
-                warnings.warn(
-                    "Debug mode forces single-threaded execution for "
-                    "deterministic log ordering. "
-                    "The max_workers setting will be overridden to 1.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-            max_workers = 1
-
-        num_completed = 0
-        with (
-            _redirect_warnings_to_tqdm(),
-            concurrent.futures.ThreadPoolExecutor(max_workers) as executor,
-        ):
-            futures = {
-                executor.submit(
-                    self._sample_point_region,
-                    xs[request_index],
-                    ys[request_index],
-                    crs,
-                    # GEE and PROJ do not accept NumPy string types.
-                    str(utm_crs_codes[request_index]),
-                    region_size_pixels,
-                    year,
-                ): request_index
-                for request_index in remaining
-            }
-
-            iterator = concurrent.futures.as_completed(futures)
-            iterator = tqdm.tqdm(iterator, total=len(futures))
-            for future in iterator:
-                request_index = futures[future]
-                try:
-                    output[request_index] = future.result()
-                    status[request_index] = _PointStatus.COMPLETED
-                except Exception as e:
-                    loguru.logger.warning(
-                        "Embedding download failed for point "
-                        f"{request_index} ({type(e).__name__}):"
-                        f"\n{textwrap.indent(str(e), prefix='\t')}"
-                    )
-                    output[request_index] = np.nan
-                    status[request_index] = _PointStatus.FAILED
-
-                num_completed += 1
-                if num_completed % checkpoint_period_points == 0:
-                    output.flush()
-                    np.save(status_path, status)
-
-        # Final checkpoint after all futures have resolved.
-        output.flush()
-        np.save(status_path, status)
-
+        _write_point_log([log.to_dict() for log in logs], output_dirpath)
         return self._write_hdf5(
             output_path,
             output,
@@ -444,7 +477,7 @@ class AEFSatelliteEmbeddingStore:
             xs,
             ys,
             status,
-            crs,
+            source_crs,
             year,
             region_size_pixels,
         )
@@ -457,36 +490,37 @@ class AEFSatelliteEmbeddingStore:
         xs: Array1D[np.float64],
         ys: Array1D[np.float64],
         status: Array1D[np.uint8],
-        crs: str,
+        source_crs: str,
         year: int,
         region_size_pixels: int,
     ) -> pathlib.Path:
         """Write a self-describing HDF5 file with all outputs.
 
-        The file contains five datasets (``values``, ``ids``, ``x``, ``y``, ``status``)
-        and five file-level attributes (``crs``, ``year``, ``region_size_pixels``,
-        ``spatial_res_meters``, ``created_at``).
-        A companion ``.sha256`` checksum file is written alongside it.
+        The file contains five datasets (``values``, ``ids``, ``x``,
+        ``y``, ``status``) and five file-level attributes (``crs``,
+        ``year``, ``region_size_pixels``, ``spatial_res_meters``,
+        ``created_at``).
+        A companion ``.sha256`` sidecar is written alongside it.
 
         Args:
             output_path:
-                Destination HDF5 file path.
+                Destination file path.
             output:
-                Float64 embedding array.
+                The embedding values.
             ids:
-                One-dimensional point ID array.
+                The query point IDs.
             xs:
-                One-dimensional source-CRS x-coordinates.
+                The query point x-coordinates in source CRS.
             ys:
-                One-dimensional source-CRS y-coordinates.
+                The query point y-coordinates in source CRS.
             status:
-                One-dimensional uint8 status array.
-            crs:
-                Source CRS identifier string.
+                The request status.
+            source_crs:
+                The source CRS identifier.
             year:
                 Dataset year.
             region_size_pixels:
-                Patch side length in pixels.
+                The query region side length in pixels.
 
         Returns:
             The output path.
@@ -497,7 +531,7 @@ class AEFSatelliteEmbeddingStore:
             f.create_dataset("x", data=xs)
             f.create_dataset("y", data=ys)
             f.create_dataset("status", data=status)
-            f.attrs["crs"] = crs
+            f.attrs["crs"] = source_crs
             f.attrs["year"] = year
             f.attrs["region_size_pixels"] = region_size_pixels
             f.attrs["spatial_res_meters"] = _SPATIAL_RES_METERS
@@ -521,29 +555,33 @@ class AEFSatelliteEmbeddingStore:
         region_size_pixels: int,
         year: int,
     ) -> list[str]:
-        """Return GEE asset IDs for tiles that intersect the patch footprint.
+        """Return tile identifiers that intersect the query region.
 
         Args:
             x:
-                Snapped easting of the center pixel in meters (UTM).
+                Snapped easting of the center pixel in meters.
+                The coordinate is in UTM.
             y:
-                Snapped northing of the center pixel in meters (UTM).
+                Snapped northing of the center pixel in meters.
+                The coordinate is in UTM.
             utm_crs:
-                EPSG code string for the local UTM CRS.
+                The local UTM CRS identifier.
             region_size_pixels:
-                Side length of the requested patch in pixels.
+                Side length of the query region in pixels.
             year:
                 Dataset year.
 
         Returns:
-            List of ``system:id`` strings for intersecting tiles.
+            List of tile identifiers for intersecting tiles.
         """
         point = ee.Geometry.Point((x, y), proj=utm_crs)
-        # For single-pixel requests there is no need to buffer.
+        # For single-pixel queries there is no need to buffer.
         bounds = (
             point
             if region_size_pixels == 1
-            else point.buffer(_half_patch_side_m(region_size_pixels)).bounds()
+            else point.buffer(
+                _compute_raster_half_side_length(region_size_pixels)
+            ).bounds()
         )
 
         result: list[str] | None = (
@@ -557,131 +595,132 @@ class AEFSatelliteEmbeddingStore:
     @google.api_core.retry.Retry()
     def _sample_point_region(
         self,
-        x: float,
-        y: float,
-        crs: str,
+        source_x: float,
+        source_y: float,
+        source_crs: str,
         utm_crs: str,
         region_size_pixels: int,
         year: int,
-    ) -> _Response:
-        """Sample a patch around a single point from GEE.
+    ) -> tuple[_Response, dict[str, Any]]:
+        """Sample a region around a single query point.
 
-        The point is reprojected from the source CRS to its local UTM zone, snapped to
-        the nearest pixel center, and the requested region is fetched.
-        If the region spans multiple tiles, subsequent tile responses are merged into
-        the first.
+        The query point is reprojected from the source CRS to its
+        local UTM zone, snapped to the nearest pixel center, and the
+        requested region is fetched.
+        If the region spans multiple tiles, the rasters are merged.
 
         Args:
-            x:
-                Input x-coordinate in the source CRS.
-            y:
-                Input y-coordinate in the source CRS.
-            crs:
-                Source CRS identifier string.
+            source_x:
+                The query point x-coordinate in source CRS.
+            source_y:
+                The query point y-coordinate in source CRS.
+            source_crs:
+                The source CRS identifier.
             utm_crs:
-                Local UTM CRS identifier string.
+                The local UTM CRS identifier.
             region_size_pixels:
-                Side length of the sampled patch in pixels.
+                Side length of the query region in pixels.
             year:
                 Dataset year.
 
         Returns:
-            Float64 array of shape ``(S, S, 64)`` for the sampled
-            patch.
+            The merged pixel array and the accumulated log events.
 
         Raises:
             RuntimeError:
-                If the point does not intersect any dataset tiles.
+                If the query point does not intersect any tiles in
+                the dataset.
         """
-        log = loguru.logger.bind(
-            source_crs=crs,
-            utm_crs=utm_crs,
-            dataset_year=year,
-            patch_size_px=region_size_pixels,
-            source_x=x,
-            source_y=y,
+        utm_x, utm_y = _get_or_create_transformer(source_crs, utm_crs).transform(
+            source_x, source_y
         )
-
-        # Reproject from the source CRS to the local UTM zone.
-        utm_x, utm_y = _get_transformer(crs, utm_crs).transform(x, y)
-        log = log.bind(utm_easting=utm_x, utm_northing=utm_y)
-        log.debug("Reprojected query point from source CRS to UTM.")
-
-        # Snap to the nearest 10 m pixel center.
         snapped_x, snapped_y = _snap_to_pixel_center(utm_x, utm_y)
-        log = log.bind(snapped_easting=snapped_x, snapped_northing=snapped_y)
-        log.debug("Snapped UTM coordinates to the nearest pixel center.")
 
-        request = _build_base_request(snapped_x, snapped_y, region_size_pixels, utm_crs)
-
+        request = _build_pixel_request(
+            snapped_x, snapped_y, region_size_pixels, utm_crs
+        )
         tile_ids = self._get_intersecting_tile_ids(
             snapped_x, snapped_y, utm_crs, region_size_pixels, year
         )
-        log = log.bind(tile_count=len(tile_ids), tile_asset_ids=tile_ids)
-        if len(tile_ids) != 1:
-            log.debug(
-                f"Point intersects {len(tile_ids)} dataset tiles; "
-                f"multi-tile merge is required."
-            )
-
-        # Fetch and merge tile responses.
-        # The first tile becomes the parent; subsequent tiles fill gaps.
-        parent_response: _Response | None = None
-        parent_tile_id: str | None = None
-        for tile_id in tile_ids:
-            request["assetId"] = tile_id
-            log.bind(gee_request=request).debug(
-                f"Fetching pixel data from GEE tile {tile_id}."
-            )
-
-            child_response = _fetch_response(request)
-
-            if parent_response is None:
-                parent_response = child_response
-                parent_tile_id = tile_id
-            else:
-                conflict_mask = _find_response_conflicts(
-                    parent_response, child_response
-                )
-                if conflict_mask is not None:
-                    log.bind(
-                        existing_tile_id=parent_tile_id,
-                        overlapping_tile_id=tile_id,
-                        conflicting_pixel_count=int(conflict_mask[..., 0].sum()),
-                        conflicting_pixel_indices=np.argwhere(
-                            conflict_mask[..., 0]
-                        ).tolist(),
-                        existing_values_int8=self.quantize(
-                            parent_response[conflict_mask]
-                        ).tolist(),
-                        overlapping_values_int8=self.quantize(
-                            child_response[conflict_mask]
-                        ).tolist(),
-                    ).warning(
-                        f"Overlapping tiles {parent_tile_id} and {tile_id} disagree on"
-                        f"{int(conflict_mask[..., 0].sum())} pixel(s); keeping values "
-                        f"from the first tile."
-                    )
-                _merge_child_into_parent_response(parent_response, child_response)
-
-        if parent_response is None:
+        if not tile_ids:
             raise RuntimeError(
-                "No dataset tiles found for this point. "
-                "The location may be outside the spatial coverage of the dataset for "
-                "the requested year ({year})."
+                "No tiles found for this point. The location may be outside"
+                f" the spatial coverage of the dataset for {year}."
             )
 
-        valid_px = int(np.sum(~np.isnan(parent_response[..., 0])))
-        total_px = parent_response.shape[0] * parent_response.shape[1]
-        log.bind(
-            response_checksum_md5=hashlib.md5(
-                np.ascontiguousarray(parent_response).tobytes()
-            ).hexdigest(),
-            valid_pixel_count=valid_px,
-            missing_pixel_count=total_px - valid_px,
-        ).debug(f"Point complete: {valid_px}/{total_px} pixels valid.")
+        merged, conflicts = _fetch_and_merge_tiles(request, tile_ids)
 
-        return parent_response
+        band0 = merged[..., 0]
+        valid_pixels = int(
+            np.sum(
+                ~(np.isnan(band0) | np.isinf(band0) | np.isclose(band0, _FLOAT_NODATA))
+            )
+        )
+        total_pixels = merged.shape[0] * merged.shape[1]
+        events = {
+            "utm_easting": utm_x,
+            "utm_northing": utm_y,
+            "snapped_easting": snapped_x,
+            "snapped_northing": snapped_y,
+            "tiles": tile_ids,
+            "conflicts": conflicts,
+            "valid_pixels": valid_pixels,
+            "missing_pixels": total_pixels - valid_pixels,
+            "checksum_md5": hashlib.md5(
+                np.ascontiguousarray(merged).tobytes()
+            ).hexdigest(),
+        }
+        return merged, events
+
+
+def _fetch_and_merge_tiles(
+    request: _Request,
+    tile_ids: list[str],
+) -> tuple[_Response, list[dict[str, Any]]]:
+    """Fetch pixel data from all tiles and merge into a single array.
+
+    The first tile becomes the base raster.
+    Subsequent tiles fill gaps via gap-fill merging.
+    Conflicts between overlapping valid pixels are recorded but
+    resolved in favor of the base tile.
+
+    Args:
+        request:
+            A pixel data request without a tile identifier set.
+        tile_ids:
+            The tile identifiers to fetch.
+
+    Returns:
+        The merged pixel array and a list of conflict records.
+    """
+    request = {**request}
+    conflicts: list[dict[str, Any]] = []
+
+    base_tile_id = tile_ids[0]
+    request["assetId"] = base_tile_id
+    merged = _fetch_pixels(request)
+
+    for tile_id in tile_ids[1:]:
+        request["assetId"] = tile_id
+        tile_pixels = _fetch_pixels(request)
+
+        conflict_mask = _find_tile_conflicts(merged, tile_pixels)
+        if conflict_mask is not None:
+            conflict_count = int(conflict_mask[..., 0].sum())
+            conflicts.append(
+                {
+                    "tiles": [base_tile_id, tile_id],
+                    "pixel_count": conflict_count,
+                    "pixel_indices": np.argwhere(conflict_mask[..., 0]).tolist(),
+                }
+            )
+            loguru.logger.warning(
+                f"Tiles {base_tile_id} and {tile_id} disagree"
+                f" on {conflict_count} pixel(s); keeping values from the base tile."
+            )
+        _merge_tile_pixels(merged, tile_pixels)
+
+    return merged, conflicts
 
 
 def _get_point_info(
@@ -699,7 +738,8 @@ def _get_point_info(
         points:
             GeoDataFrame of query points.
         point_id_column:
-            Column name for point IDs, or ``None`` to use the index.
+            Column name for query point IDs, or ``None`` to use the
+            index.
 
     Returns:
         A tuple of ``(ids, xs, ys, utm_crs_codes)``.
@@ -712,5 +752,5 @@ def _get_point_info(
         ),
         points.geometry.x.to_numpy(),
         points.geometry.y.to_numpy(),
-        _resolve_utm_crss(points),
+        _compute_utm_crs(points),
     )

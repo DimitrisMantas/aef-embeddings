@@ -1,4 +1,4 @@
-"""Google Earth Engine request building, fetching, and response merging."""
+"""Pixel data fetching and tile merging."""
 
 from typing import Any, Final, cast
 
@@ -8,51 +8,53 @@ import numpy.lib.recfunctions as rfn
 
 from aef_embeddings._geo import (
     _SPATIAL_RES_METERS,
-    _grid_top_left_x,
-    _grid_top_left_y,
+    _compute_raster_origin_x,
+    _compute_raster_origin_y,
 )
 from aef_embeddings._types import _AffineTransform, _Grid, _Request, _Response
 
-# No-data sentinel used by the AEF dataset in float64 space.
-# Derived from the quantized no-data value -128:
-#     dequantize(-128) = -((128 / 127.5) ** 2).
-_NODATA_VALUE_F64: Final[float] = -((128 / 127.5) ** 2)
+_FLOAT_NODATA: Final[float] = -((128 / 127.5) ** 2)
+"""The floating-point no-data sentinel in the dataset."""
 
-# Canonical band identifiers for the 64-band embedding.
-_BAND_IDS: Final[list[str]] = [f"A{i:02d}" for i in range(64)]
+_BAND_NAMES: Final[list[str]] = [f"A{i:02d}" for i in range(64)]
+"""The band names in the dataset."""
 
 
-def _build_base_request(
+def _build_pixel_request(
     x: float,
     y: float,
     region_size_pixels: int,
     utm_crs: str,
 ) -> _Request:
-    """Build a ``getPixels`` request body without an ``assetId``.
+    """Build a pixel data request for a query region.
 
-    The caller must set ``request["assetId"]`` before dispatching the request.
+    The request does not include a tile identifier.
+    The caller must set one before dispatching.
 
     Args:
         x:
-            Snapped easting of the center pixel in meters (UTM).
+            Snapped easting of the center pixel in meters.
+            The coordinate is in UTM.
         y:
-            Snapped northing of the center pixel in meters (UTM).
+            Snapped northing of the center pixel in meters.
+            The coordinate is in UTM.
         region_size_pixels:
-            Side length of the requested patch in pixels.
+            Side length of the query region in pixels.
         utm_crs:
-            EPSG code string for the local UTM CRS.
+            The local UTM CRS identifier.
 
     Returns:
-        A ``_Request`` dict ready to be dispatched after setting ``assetId``.
+        A request dict ready to be dispatched after setting the
+        tile identifier.
     """
     half_side_px = region_size_pixels // 2
     affine: _AffineTransform = {
         "scaleX": float(_SPATIAL_RES_METERS),
         "shearX": 0.0,
-        "translateX": _grid_top_left_x(x, half_side_px, _SPATIAL_RES_METERS),
+        "translateX": _compute_raster_origin_x(x, half_side_px, _SPATIAL_RES_METERS),
         "shearY": 0.0,
         "scaleY": float(-_SPATIAL_RES_METERS),
-        "translateY": _grid_top_left_y(y, half_side_px, _SPATIAL_RES_METERS),
+        "translateY": _compute_raster_origin_y(y, half_side_px, _SPATIAL_RES_METERS),
     }
     grid: _Grid = {
         "dimensions": {
@@ -62,105 +64,95 @@ def _build_base_request(
         "affineTransform": affine,
         "crsCode": utm_crs,
     }
-    request: _Request = {
+    return {
         "fileFormat": "NUMPY_NDARRAY",
         "grid": grid,
-        "bandIds": _BAND_IDS,
+        "bandIds": _BAND_NAMES,
     }
-    return request
 
 
-def _fetch_response(request: _Request) -> _Response:
-    """Fetch pixel data from GEE and convert to an unstructured array.
+def _fetch_pixels(request: _Request) -> _Response:
+    """Fetch embedding pixels for a single tile.
 
-    The GEE ``getPixels`` API returns a NumPy structured array with one named field per
-    band.
-    This function converts it to a plain float64 array of shape ``(S, S, 64)``.
+    The structured per-band result is converted to a plain float64
+    array of shape ``(S, S, 64)``.
 
     Args:
         request:
-            A complete ``_Request`` dict including ``assetId``.
+            A complete request dict including the tile identifier.
 
     Returns:
-        Float64 array of shape ``(S, S, 64)`` for the requested patch.
+        Embedding array of shape ``(S, S, 64)`` for the query
+        region.
 
     Raises:
         ValueError:
-            If GEE returns an unstructured array instead of the expected structured
-            ``NUMPY_NDARRAY``.
+            If the result is an unstructured array instead of the
+            expected structured per-band array.
     """
-    response = ee.data.getPixels(cast(dict[str, Any], request))
-    band_names = response.dtype.names
+    structured = ee.data.getPixels(cast(dict[str, Any], request))
+    band_names = structured.dtype.names
     if band_names is None:
         raise ValueError(
-            "Expected a structured array from ee.data.getPixels but "
-            "received an unstructured array. "
-            "Verify that fileFormat is NUMPY_NDARRAY."
+            "Expected a structured per-band array but received an unstructured array."
         )
-    return rfn.structured_to_unstructured(response[[*band_names]])
+    return rfn.structured_to_unstructured(structured[[*band_names]])
 
 
-def _find_response_conflicts(
-    parent_response: _Response,
-    child_response: _Response,
+def _find_tile_conflicts(
+    merged: _Response,
+    incoming: _Response,
 ) -> np.ndarray[tuple[int, ...], np.dtype[np.bool_]] | None:
-    """Return a boolean mask of pixels that are valid in both responses but differ.
+    """Return a boolean mask of pixels that are valid in both arrays but differ.
 
-    A conflict occurs when a pixel is finite, non-no-data in both the parent and child
-    responses but the two values disagree.
+    A conflict occurs when a pixel is finite and non-no-data in
+    both arrays but the two values disagree.
 
     Args:
-        parent_response:
-            Accumulated response array of shape ``(S, S, 64)``.
-        child_response:
-            New tile response array of shape ``(S, S, 64)``.
+        merged:
+            The accumulated pixel array of shape ``(S, S, 64)``.
+        incoming:
+            The new tile pixel array of shape ``(S, S, 64)``.
 
     Returns:
-        Boolean mask of conflicting elements, or ``None`` if there are no conflicts.
+        Boolean mask of conflicting elements, or ``None`` if there
+        are no conflicts.
     """
 
     def _is_invalid(
         arr: _Response,
     ) -> np.ndarray[tuple[int, ...], np.dtype[np.bool_]]:
-        return np.isinf(arr) | np.isnan(arr) | np.isclose(arr, _NODATA_VALUE_F64)
+        return np.isinf(arr) | np.isnan(arr) | np.isclose(arr, _FLOAT_NODATA)
 
-    both_are_valid = ~_is_invalid(parent_response) & ~_is_invalid(child_response)
-    if not np.any(both_are_valid):
+    both_valid = ~_is_invalid(merged) & ~_is_invalid(incoming)
+    if not np.any(both_valid):
         return None
-    differs = ~np.isclose(parent_response, child_response, equal_nan=True)
-    mask = both_are_valid & differs
+    differs = ~np.isclose(merged, incoming, equal_nan=True)
+    mask = both_valid & differs
     return mask if np.any(mask) else None
 
 
-def _merge_child_into_parent_response(
-    parent_response: _Response,
-    child_response: _Response,
+def _merge_tile_pixels(
+    merged: _Response,
+    incoming: _Response,
 ) -> None:
-    """Fill invalid parent pixels from valid child pixels.
+    """Fill invalid pixels in the accumulated array from the incoming array.
 
     This is a pure gap-fill operation.
-    It does not check for conflicts; call ``_find_response_conflicts`` first if conflict
-    detection is needed.
+    Call ``_find_tile_conflicts`` first if conflict detection is
+    needed.
 
     Args:
-        parent_response:
-            Accumulated response array, modified in place.
-        child_response:
-            New tile response array.
+        merged:
+            The accumulated pixel array, modified in place.
+        incoming:
+            The new tile pixel array.
     """
-    child_is_invalid = (
-        np.isinf(child_response)
-        | np.isnan(child_response)
-        | np.isclose(child_response, _NODATA_VALUE_F64)
+    incoming_valid = ~(
+        np.isinf(incoming) | np.isnan(incoming) | np.isclose(incoming, _FLOAT_NODATA)
     )
-    child_is_valid = ~child_is_invalid
-
-    parent_is_invalid = (
-        np.isinf(parent_response)
-        | np.isnan(parent_response)
-        | np.isclose(parent_response, _NODATA_VALUE_F64)
+    merged_invalid = (
+        np.isinf(merged) | np.isnan(merged) | np.isclose(merged, _FLOAT_NODATA)
     )
-
-    # Only overwrite parent pixels that are invalid with valid child pixels.
-    to_replace = child_is_valid & parent_is_invalid
-    parent_response[to_replace] = child_response[to_replace]
+    fill = incoming_valid & merged_invalid
+    merged[fill] = incoming[fill]
