@@ -1,38 +1,59 @@
 # aef-embeddings
 
 Python client for downloading and processing [AlphaEarth Foundation
-satellite embeddings][aef-catalog] from Google Earth Engine.
+embeddings][aef-catalog] from Google Earth Engine.
+
+## Why aef-embeddings?
+
+Sampling embeddings from Earth Engine sounds simple until you run into
+the tiling grid. The AEF dataset is split across thousands of tiles,
+each in its own projection. The standard workflow is to mosaic tiles
+into a common CRS before sampling, but this forces a reprojection step
+that subtly degrades pixel values through resampling interpolation.
+
+aef-embeddings avoids this entirely. Each query point is sampled in its
+own local UTM zone, directly on the native pixel grid, so the values
+you get back are the exact values stored in the dataset. Multi-tile
+regions are merged automatically with conflict detection, and downloads
+are checkpointed so interrupted jobs resume where they left off.
+
+The package also includes built-in spatial pooling (GeM and statistical)
+and quantization helpers, so you can go from raw coordinates to
+analysis-ready feature vectors in a single script.
 
 ```python
 import geopandas as gpd
 import h5py
-from aef_embeddings import AEFSatelliteEmbeddingStore
+from aef_embeddings import AEFEmbeddingStore
 
-store = AEFSatelliteEmbeddingStore.create("your-gee-project-id")
+store = AEFEmbeddingStore.create("your-gee-project-id")
 
+# Sample a 5x5-pixel region (50 m x 50 m at 10 m resolution) around each point.
 path = store.sample_region(
     gpd.read_file("points.gpkg"),
     point_id_column="id",
-    region_size_pixels=5,  # 5x5 pixels = 50 m x 50 m at 10 m resolution
+    region_size_pixels=5,
     year=2024,
 )
 
 with h5py.File(path) as f:
-    values = f["values"][:]  # (N, 5, 5, 64)
+    # Each point has a 5x5 spatial grid of 64-band embeddings.
+    values = f["values"][:]
 
-pooled = AEFSatelliteEmbeddingStore.gem_pool(values)  # (N, 64)
+# GeM pooling collapses the spatial grid into a single 64-d vector per point.
+pooled = AEFEmbeddingStore.gem_pool(values)
 ```
 
 ## Features
 
-- **Batch downloading** — sample 64-band embeddings for arbitrary point
+- **Batch downloading.** Sample 64-band embeddings for arbitrary point
   locations via the Earth Engine `getPixels` API, with checkpointed
-  downloads and automatic resume
-- **Quantization** — convert between float64 and int8 for compact
-  storage when full precision is not needed
-- **Spatial pooling** — collapse multi-pixel regions into a single
+  downloads and automatic resume.
+- **Quantization.** Convert between float64 and int8 for compact
+  storage when full precision is not needed.
+- **Spatial pooling.** Collapse multi-pixel regions into a single
   vector per point using Generalized Mean (GeM) pooling or statistical
-  pooling
+  pooling.
 
 ## Installation
 
@@ -80,17 +101,20 @@ nearest pixel center, and a square region of `region_size_pixels` x
 because the region is always centered on the query point.
 
 ```python
-store = AEFSatelliteEmbeddingStore.create("your-gee-project-id")
+store = AEFEmbeddingStore.create("your-gee-project-id")
 
 path = store.sample_region(
     points,
     point_id_column="id",
     region_size_pixels=5,
     year=2024,
-    max_workers=40,             # up to 40 (GEE quota limit)
-    output_dirpath="data",      # output and checkpoint directory
+    # The GEE quota allows up to 40 concurrent requests.
+    max_workers=40,
+    # Output files and checkpoint artifacts are written here.
+    output_dirpath="data",
     checkpoint_period_points=5000,
-    debug=False,                # enable for structured logging + single-threaded mode
+    # Enables structured logging and forces single-threaded execution.
+    debug=False,
 )
 ```
 
@@ -98,9 +122,9 @@ The dataset covers years **2017 through 2025** at **10 m** spatial
 resolution with **64 bands**. When a region spans multiple GEE tiles,
 responses are merged automatically with conflict detection.
 
-Downloads are checkpointed periodically — if a job is interrupted, just
-call `sample_region` again with the same arguments and it picks up where
-it left off.
+Downloads are checkpointed periodically. If a job is interrupted, call
+`sample_region` again with the same arguments and it picks up where it
+left off.
 
 ### Pooling
 
@@ -109,11 +133,12 @@ embeddings. Pooling collapses that grid into a single vector.
 
 **GeM pooling** produces a 64-d vector per point. The power parameter
 `p` interpolates between average pooling (`p=1`) and max pooling
-(`p`&rarr;&infin;); the default `p=3` is a good general-purpose choice
+(`p -> inf`); the default `p=3` is a good general-purpose choice
 [[1](#references), [2](#references)]:
 
 ```python
-pooled = AEFSatelliteEmbeddingStore.gem_pool(values, p=3.0)  # (N, 64)
+# The result is a single 64-d vector per point.
+pooled = AEFEmbeddingStore.gem_pool(values, p=3.0)
 ```
 
 **Statistical pooling** concatenates per-band mean, standard deviation,
@@ -121,7 +146,8 @@ minimum, and maximum, producing a richer 256-d descriptor
 [[2](#references)]:
 
 ```python
-pooled = AEFSatelliteEmbeddingStore.stat_pool(values)  # (N, 256)
+# The result is a 256-d descriptor per point.
+pooled = AEFEmbeddingStore.stat_pool(values)
 ```
 
 Both methods ignore NaN values automatically (masked pooling), so failed
@@ -134,8 +160,10 @@ float64 when needed. The quantization scheme matches the one used for
 the [GCS distribution][aef-gcs] of the dataset:
 
 ```python
-quantized = AEFSatelliteEmbeddingStore.quantize(values)    # float64 -> int8
-restored  = AEFSatelliteEmbeddingStore.dequantize(quantized)  # int8 -> float64
+# Convert from float64 to int8.
+quantized = AEFEmbeddingStore.quantize(values)
+# Convert back from int8 to float64.
+restored = AEFEmbeddingStore.dequantize(quantized)
 ```
 
 ## Output Format
@@ -149,19 +177,19 @@ restored  = AEFSatelliteEmbeddingStore.dequantize(quantized)  # int8 -> float64
 |----------|----------------|---------|-------------------------------------------------------------|
 | `values` | (N, S, S, 64)  | float64 | Embedding arrays, one per point (S = `region_size_pixels`). |
 | `ids`    | (N,)           | varies  | Point identifiers from the input GeoDataFrame.              |
-| `x`      | (N,)           | float64 | Easting of each point center (UTM, meters).                 |
-| `y`      | (N,)           | float64 | Northing of each point center (UTM, meters).                |
-| `status` | (N,)           | uint8   | 0 = pending, 1 = completed, 2 = failed.                    |
+| `x`      | (N,)           | float64 | X-coordinate of each query point in source CRS.             |
+| `y`      | (N,)           | float64 | Y-coordinate of each query point in source CRS.             |
+| `status` | (N,)           | uint8   | 1 = pending, 2 = success, 3 = failure.                      |
 
 ### File Attributes
 
-| Name                 | Type | Description                                   |
-|----------------------|------|-----------------------------------------------|
-| `crs`                | str  | UTM CRS authority string (e.g. `EPSG:32634`). |
-| `year`               | int  | Dataset year (2017-2025).                      |
-| `region_size_pixels` | int  | Patch side length in pixels.                   |
-| `spatial_res_meters` | int  | Spatial resolution (always 10).                |
-| `created_at`         | str  | ISO 8601 UTC timestamp.                        |
+| Name                 | Type | Description                                      |
+|----------------------|------|--------------------------------------------------|
+| `crs`                | str  | Source CRS authority string (e.g. `EPSG:4326`).  |
+| `year`               | int  | Dataset year (2017-2025).                         |
+| `region_size_pixels` | int  | Patch side length in pixels.                      |
+| `spatial_res_meters` | int  | Spatial resolution (always 10).                   |
+| `created_at`         | str  | ISO 8601 UTC timestamp.                           |
 
 ## References
 
